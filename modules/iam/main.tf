@@ -1,0 +1,139 @@
+resource "aws_iam_policy" "ssm_agent" {
+  name        = "${var.project_name}-ssm-agent-policy"
+  description = "Minimum Session Manager agent permissions for Project 1B"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SessionManagerAgentChannels"
+        Effect = "Allow"
+        Action = [
+          "ssm:UpdateInstanceInformation",
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-ssm-agent-policy"
+  })
+}
+
+resource "aws_iam_role" "admin" {
+  name = "${var.project_name}-admin-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-admin-role"
+    Role = "admin"
+  })
+}
+
+resource "aws_iam_role" "target" {
+  name = "${var.project_name}-target-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-target-role"
+    Role = "target"
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "admin_ssm_agent" {
+  role       = aws_iam_role.admin.name
+  policy_arn = aws_iam_policy.ssm_agent.arn
+}
+
+resource "aws_iam_role_policy_attachment" "target_ssm_agent" {
+  role       = aws_iam_role.target.name
+  policy_arn = aws_iam_policy.ssm_agent.arn
+}
+
+resource "aws_iam_instance_profile" "admin" {
+  name = "${var.project_name}-admin-profile"
+  role = aws_iam_role.admin.name
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-admin-profile"
+    Role = "admin"
+  })
+}
+
+resource "aws_iam_instance_profile" "target" {
+  name = "${var.project_name}-target-profile"
+  role = aws_iam_role.target.name
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-target-profile"
+    Role = "target"
+  })
+}
+
+resource "aws_iam_policy" "admin_s3_transfer" {
+  name        = "${var.project_name}-admin-s3-transfer-policy"
+  description = "Allow the admin node to use only the Ansible transfer bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "BucketListingAndLocation"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = var.ansible_transfer_bucket_arn
+      },
+      {
+        Sid    = "TransferTemporaryFiles"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "${var.ansible_transfer_bucket_arn}/*"
+      }
+    ]
+  })
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-admin-s3-transfer-policy"
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "admin_s3_transfer" {
+  role       = aws_iam_role.admin.name
+  policy_arn = aws_iam_policy.admin_s3_transfer.arn
+}
+
+
+
+

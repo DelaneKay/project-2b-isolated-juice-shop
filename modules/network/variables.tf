@@ -1,0 +1,9 @@
+variable "project_name" { type = string }
+variable "common_tags" { type = map(string) }
+variable "aws_region" { type = string }
+variable "vpc_cidr" { type = string }
+variable "availability_zone" { type = string }
+variable "public_subnet_cidr" { type = string }
+variable "admin_private_subnet_cidr" { type = string }
+variable "target_private_subnet_cidr" { type = string }
+variable "ansible_transfer_bucket_arn" { type = string }

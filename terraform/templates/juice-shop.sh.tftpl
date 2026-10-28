@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euxo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io
+systemctl enable --now docker
+
+# Keep the app ephemeral and constrained. Juice Shop state is deliberately not persisted.
+docker run -d \
+  --name juice-shop \
+  --restart unless-stopped \
+  --pull always \
+  --publish 3000:3000 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --tmpfs /juice-shop/data:rw,noexec,nosuid,size=64m,uid=1000,gid=1000 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 \
+  --memory 768m \
+  "${image}"
+
