@@ -1,8 +1,8 @@
 # Project 2B — Step-by-step lab walkthrough
 
-This is a chronological reconstruction of the commands and outcomes recorded in the project chat. It separates commands run on the **WSL workstation** from commands run inside **EC2 Systems Manager (SSM) sessions**. The EC2 prompt was usually `ssm-user@ip-...`; that shell does not contain the WSL project checkout. Exit an SSM session before using local project paths.
+I built this walkthrough from the start of our project chat through teardown. I kept the command sequence chronological and separated my **WSL workstation** commands from the commands I ran inside **EC2 Systems Manager (SSM)**. The EC2 prompt was usually `ssm-user@ip-...`; it could not see my WSL project checkout, so I exited the SSM session before using local project paths.
 
-This is a lab record, not a claim that every security control was production-ready. Where a command below is cleaned up for repeatability, the text says so. Identifiers and IP addresses are historical and change on redeployment. Never paste an AWS password, access key, NVD key, or Sonar token into this document or command history. The Sonar token appeared in the chat during troubleshooting; revoke/rotate it before any further use. The published screenshots have been redacted.
+I wrote down what actually happened, including failed attempts, rather than presenting the lab as production-ready. When I cleaned up a command or reconstructed it because the terminal paste was incomplete, I say so. Instance IDs and IP addresses below are historical and change on redeployment. I have not included passwords, AWS keys, the NVD key, or Sonar tokens. A Sonar token appeared in the chat during troubleshooting, so I recommend revoking it and generating a new one before another analysis. I redacted the published screenshots.
 
 ## Lab at a glance
 
@@ -12,17 +12,21 @@ This is a lab record, not a claim that every security control was production-rea
 - **Not used:** AWS WAF (no public HTTP entry point), Trivy, OWASP ZAP, and a completed Project 2B Ansible hardening run.
 - **Cleanup:** Terraform reported 39 resources destroyed; a follow-up EC2 query showed no project instances. A complete post-destroy inventory of every AWS resource type was not retained.
 
-The VPC, IAM, and storage modules were reused and adapted from Project 1B, then included in this repository under `modules/`. Project 2B has its own Terraform root for app/scanner instances and security groups. The module source is therefore available to someone cloning this repository; it does not depend on a sibling Project 1B checkout.
+I reused and adapted the VPC, IAM, and storage modules from Project 1B and included their source under `modules/`. I connected them to a separate Project 2B Terraform root for the Juice Shop and scanner hosts and their security groups. Someone cloning this repository can see the module files; the lab does not depend on a sibling Project 1B checkout.
+
+### How I checked command coverage
+
+I checked each distinct command family in the chat: AWS login and Terraform, SSM shell and port forwarding, Docker installation and container startup, image/source transfer, Dependency-Check, SonarQube, Nuclei, and teardown. I consolidated repeated retries into the relevant troubleshooting sections. I did not reproduce malformed terminal pastes as runnable code, and I mark command reconstructions where the original full line was not captured. A few one-off account recovery and UI clicks are described without publishing reusable password-reset or token values.
 
 ## 1. Start in the WSL project checkout
 
-The lab was continued in the existing WSL checkout rather than rebuilding the directory tree. The project was under:
+I continued in my existing WSL checkout instead of recreating the project directories. The checkout was:
 
 ```text
 /home/devsecops/projects/project-2b-isolated-juice-shop
 ```
 
-In a **WSL terminal**, check the project and move to the Terraform root:
+In **WSL**, I checked the files and moved into the Terraform root:
 
 ```bash
 cd ~/projects/project-2b-isolated-juice-shop
@@ -30,11 +34,11 @@ find . -maxdepth 3 -type f | sort
 cd terraform
 ```
 
-The inventory showed the Terraform root, the `modules/` tree, `docs/`, `ansible/`, and `scans/`. When commands were accidentally run inside an EC2 SSM shell, `cd ~/projects/project-2b-isolated-juice-shop` failed because that WSL path exists only on the workstation. Return to the WSL prompt for repository, Git, and local report work.
+The inventory showed my Terraform root, `modules/`, `docs/`, `ansible/`, and `scans/`. I once ran `cd ~/projects/project-2b-isolated-juice-shop` inside an EC2 SSM shell; it failed because that path exists only in WSL. I returned to the WSL prompt whenever I needed the repository, Git, or a local report.
 
 ## 2. Log in to AWS and review Terraform
 
-The lab used the home-lab CLI profile `mds-devsecops-lab` and region `us-east-1`. The AWS CLI login session was short-lived. When Terraform returned `ExpiredToken` or said the login session expired, authenticate again before retrying; do not change credentials in Terraform.
+I used the home-lab CLI profile `mds-devsecops-lab` in `us-east-1`. The AWS CLI session was short-lived. When Terraform returned `ExpiredToken` or said the login session had expired, I authenticated again before retrying; I did not put credentials in Terraform.
 
 In **WSL**, from `terraform/`:
 
@@ -47,7 +51,44 @@ terraform validate
 terraform plan
 ```
 
-The chat records an early Terraform module error: `modules/storage/main.tf` referred to `data.aws_caller_identity.current`, but that data source had only been declared in the root module. Terraform modules do not inherit root data resources. The storage module needed its own caller-identity data declaration. An S3 VPC endpoint policy was also updated to permit the Docker image layer download path. An early `terraform fmt -recursive` was accidentally run from the project root and treated a file path as a directory; run it from the Terraform directory as above.
+Before that login, I used an authorized `root-recovery` profile once to reset the IAM user's console password. The script prompted twice without displaying the password, wrote a short-lived mode-restricted JSON file, called IAM, and removed the file. I include the sanitized command here because it was a distinct setup step; it is account-specific and only works if that profile has permission to update the user's login profile:
+
+```bash
+(
+  set -e
+  umask 077
+  login_input="$(mktemp)"
+  trap 'rm -f "$login_input"' EXIT
+
+  python3 - "$login_input" <<'PY'
+import getpass
+import json
+import sys
+
+password = getpass.getpass("New password for mds-devsecops-lab: ")
+confirmation = getpass.getpass("Enter it again: ")
+
+if not password or password != confirmation:
+    raise SystemExit("Passwords are empty or do not match. Nothing changed.")
+
+with open(sys.argv[1], "w") as file:
+    json.dump({
+        "UserName": "mds-devsecops-lab",
+        "Password": password,
+        "PasswordResetRequired": False
+    }, file)
+PY
+
+  aws iam update-login-profile \
+    --cli-input-json "file://$login_input" \
+    --profile root-recovery \
+    --no-cli-auto-prompt
+)
+```
+
+I then authenticated with the short-lived CLI login shown above. This password reset is not part of Terraform and does not create AWS resources.
+
+I first hit a Terraform module error: `modules/storage/main.tf` referred to `data.aws_caller_identity.current`, but I had declared that data source only in the root. Child modules do not inherit root data resources, so I declared it in the storage module. I also updated the S3 VPC endpoint policy to allow the Docker image-layer download path. I initially ran `terraform fmt -recursive` from the project root and got a path error; running it from `terraform/` worked.
 
 Review the plan before applying. It showed **40 resources to add** on a successful plan. Pay attention to NAT Gateway/EIP cost, EC2 instance types, IAM policies, S3 bucket, and network rules. The lab was later recreated, so output IDs differ across runs.
 
@@ -56,27 +97,37 @@ terraform apply
 terraform output
 ```
 
-A successful apply returned the Juice Shop instance ID/private IP, scanner instance ID, VPC ID, and an SSM port-forward command. Do not copy old IDs into a new run; use `terraform output` and the current EC2/SSM status instead.
+A successful apply returned the Juice Shop instance ID and private IP, scanner instance ID, VPC ID, and an SSM port-forward command. I used `terraform output` and the current EC2/SSM status rather than carrying old IDs into the recreated deployment.
 
 ## 3. Verify the private network and open SSM sessions
 
-The design had a private app host and private scanner host. The app security group allowed TCP 3000 from the scanner security group; the scanner had no inbound rule. No SSH rule or public IP was intended. SSM was the administration path. Both hosts used the target instance profile for SSM agent channels, and the host role did not have permission to inspect IAM policies or EC2 instance types; attempts to call `iam:ListAttachedRolePolicies` and `ec2:DescribeInstanceTypes` were denied as expected for that role.
+I deployed a private app host and private scanner host. The app security group allowed TCP 3000 from the scanner security group; the scanner had no inbound rule. I did not add SSH ingress or public IPs. I used SSM to administer both hosts. They shared the target instance profile for SSM agent channels. From the host role, attempts to inspect attached IAM policies and EC2 instance types were denied; those denials showed the role did not have those read permissions, but they were not a complete IAM audit.
 
-From **WSL**, start an interactive shell on a host using its current ID from Terraform output:
+From **WSL**, I checked that the hosts were managed and online, then opened an interactive shell using the current ID from Terraform output:
+
+```bash
+aws ssm describe-instance-information \
+  --region us-east-1 \
+  --profile mds-devsecops-lab \
+  --query 'InstanceInformationList[].{Instance:InstanceId,Ping:PingStatus}' \
+  --output table
+```
+
+I opened a host session with:
 
 ```bash
 aws ssm start-session --target <CURRENT_INSTANCE_ID> --region us-east-1 --profile mds-devsecops-lab
 ```
 
-Use one WSL terminal/session for the app host and another for the scanner when you need both. Commands prefixed with `sudo` in the next sections run in the relevant **EC2 SSM shell**, not WSL. SSM sessions sometimes expired after inactivity; reconnect with the command above. Port-forwarding also failed at times with a Session Manager plugin handshake timeout even though the plugin was installed; check `session-manager-plugin --version`, verify the instance is Online, and retry with a different local port. Do not infer an app failure from a port-forward handshake failure.
+I used separate WSL terminals when I needed sessions to both hosts. Commands prefixed with `sudo` in the next sections ran in the relevant **EC2 SSM shell**, not WSL. SSM sessions expired after inactivity, so I reconnected with the command above. Port forwarding also returned Session Manager plugin handshake timeouts even though the plugin was installed. I checked `session-manager-plugin --version`, confirmed the instance was Online, and retried; a handshake failure did not mean the application itself was down.
 
-The generated Juice Shop port-forward command used `AWS-StartPortForwardingSession` and remote port 3000. SonarQube used remote port 9000. Keep the forwarding command running in one WSL terminal; use the browser or `curl` from another. The service itself was checked on the EC2 host with `curl http://127.0.0.1:9000/api/system/status`; its status moved from `STARTING` to `UP`.
+The Juice Shop forward used remote port 3000. I kept it running in one WSL terminal and opened `http://127.0.0.1:3000` locally. For SonarQube, I forwarded remote port 9000 to local port 19000 and used the browser on `http://127.0.0.1:19000`. On the SonarQube EC2 host, I checked `curl -sS http://127.0.0.1:9000/api/system/status`; its status moved from `STARTING` to `UP`.
 
 ## 4. Install Docker and bring Juice Shop up
 
 ### 4.1 Diagnose the failed bootstrap
 
-Cloud-init initially failed in `scripts_user`; `docker` was not installed and `sudo docker` returned `command not found`. On the **Juice Shop EC2 SSM shell**, the diagnostic commands used were:
+My first cloud-init run failed in `scripts_user`; Docker was not installed, and `sudo docker` returned `command not found`. In the **Juice Shop EC2 SSM shell**, I checked the cloud-init and package state with:
 
 ```bash
 sudo cloud-init status --long
@@ -84,7 +135,17 @@ sudo tail -n 100 /var/log/cloud-init-output.log
 sudo apt-cache policy docker.io
 ```
 
-The bootstrap log said `Package 'docker.io' has no installation candidate`. The Ubuntu package source was later available, and manual installation succeeded. The host reported Docker `29.1.3-0ubuntu3~24.04.2`.
+The bootstrap log said `Package 'docker.io' has no installation candidate`. I changed the Ubuntu package source URLs from HTTP to HTTPS in the startup template and retried; Docker still needed a manual install. This was the source edit I used:
+
+```bash
+for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+  if [ -f "$source_file" ]; then
+    sed -i 's|http://|https://|g' "$source_file"
+  fi
+done
+```
+
+Manual installation succeeded, and the host reported Docker `29.1.3-0ubuntu3~24.04.2`.
 
 ```bash
 sudo apt-get update
@@ -94,7 +155,17 @@ sudo systemctl is-active docker
 sudo docker --version
 ```
 
-The successful checks returned `active` and Docker version `29.1.3`. An attempt to install the Ubuntu `awscli` package on EC2 also failed because there was no installation candidate; AWS CLI was installed in WSL instead. The target EC2 role initially received S3 `403 AccessDenied`, so the WSL identity with bucket permissions performed the successful S3 transfer.
+The successful checks returned `active` and Docker version `29.1.3`. I also tried `sudo apt-get install -y awscli` on EC2, but Ubuntu had no installation candidate. I then installed AWS CLI v2 from its official archive on the host:
+
+```bash
+cd /tmp
+curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+unzip -q awscliv2.zip
+sudo ./aws/install
+aws --version
+```
+
+The target EC2 role still received S3 `403 AccessDenied`, so I performed the successful S3 transfer from WSL using the lab profile, which had bucket access.
 
 ### 4.2 Pull the pinned application image
 
@@ -109,9 +180,9 @@ The pull succeeded (image digest recorded in the terminal) but `docker ps -a` wa
 
 ### 4.3 Correct the read-only filesystem failure
 
-The first manual container attempt included `--read-only` and a tmpfs for `/juice-shop/data`. Juice Shop restarted with `ENOENT` while copying its chatbot training file. Adding an anonymous volume at `/juice-shop/data` fixed that missing-path error, but the read-only root filesystem then failed when Juice Shop initialized `.well-known/csaf/provider-metadata.json` and other generated files (`EROFS`). These were application startup writes, not evidence of an image download failure.
+My first manual container attempt included `--read-only` and a tmpfs for `/juice-shop/data`. Juice Shop restarted with `ENOENT` while copying its chatbot training file. I added an anonymous volume at `/juice-shop/data`, which fixed that missing-path error; the read-only root filesystem then failed when Juice Shop initialized `.well-known/csaf/provider-metadata.json` and other generated files (`EROFS`). Those were startup writes, not an image download problem.
 
-The working command removed `--read-only`, used an anonymous data volume, and retained the other runtime restrictions. In the **app EC2 SSM shell**:
+The manual command that finally started Juice Shop removed `--read-only`, used an anonymous data volume, and retained the other runtime restrictions. In the **app EC2 SSM shell**, I ran:
 
 ```bash
 sudo docker rm -f juice-shop 2>/dev/null || true
@@ -130,7 +201,7 @@ sudo docker ps -a --filter name=juice-shop
 sudo docker logs juice-shop --tail 30
 ```
 
-The container reached `Up` and published port 3000 on the host. Although Docker displayed `0.0.0.0:3000`, the instance had no public IP and the AWS security group restricted app ingress to the scanner security group. The actual cloud-init template in the repository still includes `--read-only`; it must be reconciled with the working command before a future Terraform deployment. The manual run also used an anonymous volume, so application state was ephemeral.
+The container reached `Up` and published port 3000 on the host. Docker displayed `0.0.0.0:3000`, but the instance had no public IP and the AWS security group allowed app ingress only from the scanner security group. My manual run used an anonymous volume, so application state was ephemeral. I later edited the startup template in WSL to remove `--read-only` and tried to correct the data mount, but the copy of the Terraform template included in this repository still has `--read-only` and the tmpfs data mount. I need to reconcile that file with the working manual command before redeploying; the manual success does not prove that the checked-in bootstrap will succeed.
 
 From the **scanner EC2 SSM shell**, the app first returned `Connection refused` while Juice Shop was not running. After the container was fixed, the same private endpoint check returned HTTP 200:
 
@@ -142,7 +213,7 @@ curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 10 http://10.30.20.52:
 
 ## 5. Prepare the Juice Shop source for scans
 
-The source repository was cloned in **WSL** into `scans/juice-shop` at tag `v17.1.1`. Git printed a detached-HEAD warning because the tag points to a commit rather than a branch; that is normal for checking out a fixed release tag.
+I cloned the Juice Shop source in **WSL** into `scans/juice-shop` at tag `v17.1.1`. Git printed a detached-HEAD warning because that tag points to a commit rather than a branch; that is expected when I check out a fixed release tag.
 
 ```bash
 cd ~/projects/project-2b-isolated-juice-shop
@@ -151,7 +222,7 @@ cd scans
 git clone --branch v17.1.1 --depth 1 https://github.com/juice-shop/juice-shop.git juice-shop
 ```
 
-For the image-filesystem Dependency-Check scan, the pinned container image was pulled on the app/scanner host and its filesystem (including `node_modules`) was packaged and transferred to the scanner. The archive was about 93 MB. The first attempt to run `aws s3 cp` inside the SSM shell failed because `aws` was not installed there; after installing AWS CLI v2, the instance role still received `403 AccessDenied` for the transfer bucket. The archive was uploaded/downloaded from **WSL**, where the lab CLI profile had S3 access. Keep the source archive and scan artifacts in the lab bucket only as long as required.
+For the image-filesystem Dependency-Check scan, I copied the pinned image's application tree, including `node_modules`, onto the EC2 host and packaged it for transfer to the scanner. The archive was about 93 MB. I first tried `aws s3 cp` inside SSM; AWS CLI was missing. After installing AWS CLI v2, the instance role still received `403 AccessDenied` for the transfer bucket. I completed the transfer from **WSL**, where my lab CLI profile had bucket access. The chat did not preserve the full `docker cp`/archive command line, so I have recorded the operation and outcome instead of inventing an exact command. I kept the archive and scan artifacts in the lab bucket only as long as needed.
 
 Example transfer shape (use the current bucket name from the deployment; do not copy an old account-specific bucket name):
 
@@ -170,13 +241,22 @@ The commands above show the clean WSL transfer pattern. They are not a claim tha
 
 ### 6.1 Initial failures and recovery
 
-The Dependency-Check Docker image was pulled on the scanner. The report directory was initially empty because scans exited before report generation. Logs showed an invalid NVD API key (`NvdApiException`), followed by `No documents exist`; an empty/malformed key was also tested accidentally because the SSM shell was `/bin/sh` and `read -s` is a Bash option. Use `bash` before a Bash-specific silent prompt. A later run completed analysis and wrote the HTML report, but Dependency-Check warned that a cached web data source could not be refreshed and might omit recent vulnerabilities. The stored report is useful assessment evidence, but its NVD freshness is limited by that warning.
+I pulled the Dependency-Check image on the scanner. My report directory was initially empty because the scans exited before writing a report. The logs showed an invalid NVD API key (`NvdApiException`) and then `No documents exist`. I accidentally tried to use `read -s` from the SSM shell's `/bin/sh`; that option is Bash-specific. When I needed a hidden prompt, I switched to Bash first:
+
+```bash
+bash
+read -rsp 'NVD API key: ' NVD_API_KEY
+printf '\n'
+```
+
+I never put the key in this walkthrough. A later run completed and wrote the HTML report, but Dependency-Check warned that a cached web data source could not be refreshed and might omit recent vulnerabilities. I treat the report as useful assessment evidence with that freshness limitation.
 
 ### 6.2 Command used for the report
 
-The working scan used the `owasp/dependency-check:latest` image with the source mounted read-only and cache/report directories mounted persistently. The terminal paste had line-wrap artifacts; the readable command form is:
+I used `owasp/dependency-check:latest` with the source mounted read-only and cache/report directories mounted persistently. The image pull and readable form of the completed one-shot scan were:
 
 ```bash
+sudo docker pull owasp/dependency-check:latest
 sudo mkdir -p /opt/odc-data /opt/odc-image-reports
 sudo chown -R 1000:1000 /opt/odc-data /opt/odc-image-reports
 sudo docker run --rm \
@@ -190,7 +270,7 @@ sudo docker run --rm \
   --out /report
 ```
 
-The image tag used in the session was `latest`; pin a version or digest for a reproducible rerun. The successful output said `Analysis Complete` and `Writing HTML report to: /report/dependency-check-report.html`. The report was about 35 MB and was copied into `scans/juice-shop-v17.1.1-dependency-check-report.html`. On WSL the transfer was performed with `curl` against a temporary local HTTP endpoint/port-forward and saved with `-o` into the project; the download showed 100% received. The final local-copy command was:
+I used the `latest` image tag; for a reproducible rerun, I should pin a version or digest. The successful output said `Analysis Complete` and `Writing HTML report to: /report/dependency-check-report.html`. The final report was about 35 MB and I saved it as `scans/juice-shop-v17.1.1-dependency-check-report.html`. In WSL I used `curl` against the temporary local HTTP endpoint/port forward; the download reached 100%. The exact command that opened the port-8000 forwarding/listener was not preserved in the chat. The local copy command I did record was:
 
 ```bash
 curl -f http://localhost:8000/dependency-check-report.html \
@@ -205,9 +285,9 @@ The recorded summary was 17,799 dependency records, 13,484 unique dependencies, 
 
 ### 7.1 Start SonarQube and access it privately
 
-SonarQube Community Build `26.9.0.129388` ran in Docker on a temporary scanner-sized EC2 Spot instance. The first smaller `t3.small` scanner was insufficient for the JavaScript/TypeScript scan. The kernel OOM killer terminated the Java analyzer during the 54k-line project scan. A separate temporary `c7i-flex.large` Spot instance was used for SonarQube; it was stopped/destroyed with the lab. Do not describe it as always-on capacity.
+I ran SonarQube Community Build `26.9.0.129388` in Docker on a temporary scanner-sized EC2 Spot instance. My initial smaller `t3.small` scanner could not handle the JavaScript/TypeScript analysis: the kernel OOM killer terminated the Java analyzer during the roughly 54k-line scan. I switched to a separate temporary `c7i-flex.large` Spot instance for SonarQube and stopped/destroyed it with the lab. It was temporary capacity, not an always-on service.
 
-The host's resource checks were:
+On that host, I checked available memory, disk, and CPU count with:
 
 ```bash
 free -h
@@ -215,7 +295,23 @@ df -h /
 nproc
 ```
 
-The host had about 3.7 GiB available to the VM/container setup and no swap. SonarQube startup was checked locally on the EC2 host:
+The host had about 3.7 GiB of memory and no swap. My earlier `t3.small` scan host was killed by the OOM killer. AWS rejected an on-demand `c7i-flex.large` modification with `FreeTierRestrictionError`, so I chose a separate Spot host. The target role could not run `ec2:DescribeInstanceTypes`; from my WSL CLI profile, I corrected the JMESPath number quoting and queried free-tier-eligible types with at least 4 GiB:
+
+```bash
+aws ec2 describe-instance-types \
+  --region us-east-1 \
+  --filters "Name=free-tier-eligible,Values=true" \
+  --query 'InstanceTypes[?MemoryInfo.SizeInMiB>=`4096`].[InstanceType,MemoryInfo.SizeInMiB]' \
+  --output table
+```
+
+The query listed `c7i-flex.large` (4096 MiB) and `m7i-flex.large` (8192 MiB). I pulled the SonarQube image:
+
+```bash
+sudo docker pull sonarqube:26.9.0.129388-community
+```
+
+Then I checked startup locally on the EC2 host:
 
 ```bash
 sudo docker ps -a --filter name=sonarqube
@@ -223,7 +319,7 @@ sudo docker logs --tail 80 sonarqube
 curl -sS http://127.0.0.1:9000/api/system/status
 ```
 
-The service reported `STARTING` before changing to `UP`; `curl -I http://127.0.0.1:9000` returned HTTP 200 once ready. The container was published on loopback (`127.0.0.1:9000->9000/tcp`), not directly to the internet. From **WSL**, SSM port forwarding was used to expose local port 19000 to remote port 9000. Some attempts to port-forward to local port 9000 or 19000 failed with a Session Manager plugin handshake timeout; checking the plugin version and retrying the session resolved access. The session command form was:
+The service reported `STARTING` before changing to `UP`; `curl -I http://127.0.0.1:9000` returned HTTP 200 once ready. Docker showed the port bound to loopback (`127.0.0.1:9000->9000/tcp`), not the public internet. From **WSL**, I forwarded local port 19000 to remote port 9000. Some attempts failed with a Session Manager plugin handshake timeout, so I checked `session-manager-plugin --version` and retried. The working command form was:
 
 ```bash
 aws ssm start-session \
@@ -234,13 +330,13 @@ aws ssm start-session \
   --profile mds-devsecops-lab
 ```
 
-Keep that command running. Browse to `http://127.0.0.1:19000` from the WSL/Windows workstation. The SonarQube local project was named **OWASP Juice Shop v17.1.1**, project key `juice-shop-2b`, and branch `master`. The account's project token was generated in the UI; it must not be written in Git, shell history, screenshots, or this walkthrough. A token appeared in earlier chat material, so revoke it and generate a fresh one before another analysis.
+I kept that command running, then opened `http://127.0.0.1:19000` from my workstation. In SonarQube, I created **OWASP Juice Shop v17.1.1** with project key `juice-shop-2b` and main branch `master`. I generated a project token in the UI. A token appeared in earlier chat material, so I should revoke it and create a new one before another analysis; no token belongs in Git, shell history, screenshots, or this walkthrough.
 
 ### 7.2 Run the scanner
 
-The Sonar onboarding page suggested installing `@sonar/scan` globally. That was attempted in WSL but failed with `EACCES` under `/usr/lib/node_modules`; `docker` was also not installed on WSL. Scanning was moved to the EC2 host, where Docker was available, using the `sonarsource/sonar-scanner-cli:latest` image. One early scan returned HTTP 401 because the token passed to the container was not accepted. The token/API check later returned HTTP 200 and analysis submission succeeded. Do not use the raw token printed in a previous terminal or screenshot.
+Sonar's onboarding page suggested a global install. I tried `npm install -g @sonar/scan` in WSL, but it failed with `EACCES` under `/usr/lib/node_modules`. I also ran `sudo docker --version` there and got `docker: command not found`. I moved the scan to the EC2 host, where Docker was available, and used the `sonarsource/sonar-scanner-cli:latest` image. One attempt returned HTTP 401 because the token was not accepted. After I entered a token at the hidden prompt, the API check returned HTTP 200 and the analysis submitted. I have not copied any token from the chat into this guide.
 
-The exact successful full scanner invocation was not preserved as a clean text transcript. This is a **safe repeat pattern**, not a claim to reproduce the secret-bearing command verbatim. On the SonarQube EC2 host, use Bash for the silent prompt, ensure the source path exists, and run the scanner container with host networking so `127.0.0.1:9000` reaches the host SonarQube service:
+I did not preserve the exact successful full scanner invocation as a clean text transcript. The command below is my **safe repeat pattern**, not a verbatim copy of the secret-bearing attempt. On the SonarQube EC2 host, I used Bash for the hidden prompt, checked the source path, and ran the scanner with host networking so `127.0.0.1:9000` reached the SonarQube service:
 
 ```bash
 bash
@@ -258,19 +354,47 @@ sudo -E docker run --rm --network host \
 unset SONAR_TOKEN
 ```
 
-The actual scan first OOMed on the smaller host and returned 401 on a token attempt. After using the temporary Spot host and an accepted token, the analysis completed. The dashboard showed Quality Gate **Passed**; Overall Code showed 127 security issues (rating E), 132 reliability issues (rating D), and 605 maintainability issues (rating A). The project showed about 54k lines and version 17.1.1. The Sonar analysis warned that Python version and `sonar.tests` were not configured, the checkout was shallow, and blame was missing for 734 files. The workbook in `../scans/sonarqube-juice-shop-findings.xlsx` is a curated record of the issues pasted into chat, not a complete SonarQube export. Screenshots committed to `evidence/sonarqube/` have the token covered.
+My first scan OOMed on the smaller host and another returned 401. After I used the temporary Spot host and an accepted token, the analysis completed. The dashboard showed Quality Gate **Passed**; Overall Code showed 127 security issues (rating E), 132 reliability issues (rating D), and 605 maintainability issues (rating A). The project showed about 54k lines and version 17.1.1. Sonar warned that I had not configured the Python version or `sonar.tests`, that my checkout was shallow, and that blame was missing for 734 files. The workbook in `../scans/sonarqube-juice-shop-findings.xlsx` is a curated record of the issues pasted into chat, not a complete SonarQube export. I covered the token in the screenshots under `evidence/sonarqube/`.
 
 ## 8. Run DAST with Nuclei
 
-Nuclei v3.11.1 was installed on the **scanner EC2 SSM shell**. The first release URL used returned HTTP 404, so the versioned Linux AMD64 release archive was downloaded and unpacked. Nuclei printed version `v3.11.1`, installed its templates, and reported no template updates at that time.
+I installed Nuclei v3.11.1 in the **scanner EC2 SSM shell**. My first release URL returned HTTP 404. I then downloaded the versioned Linux AMD64 archive and unpacked it; Nuclei printed `v3.11.1`, installed its templates, and reported no template updates at the time. This is the successful command pattern:
 
-The scanner initially had no `nuclei` command until the binary was installed. The first curl to `http://10.30.20.52:3000/` returned `Connection refused` because Juice Shop was not listening then. After the app container was started, the scanner received HTTP 200. The scan was then run against the lab's private app address; result output was written under `/tmp` on the scanner host. The terminal output we retained was one informational match:
+```bash
+cd /tmp
+curl -fL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip \
+  -o nuclei_3.11.1_linux_amd64.zip
+unzip nuclei_3.11.1_linux_amd64.zip
+sudo install -m 0755 nuclei /usr/local/bin/nuclei
+nuclei -version
+nuclei -update-templates
+```
+
+Before installing Nuclei, I got `nuclei: command not found`. My first `curl -v --max-time 10 http://10.30.20.52:3000/` from the scanner returned `Connection refused` because Juice Shop was not listening. After I started the app container, the endpoint returned HTTP 200. I ran the DAST scan against the private app address and saved its text output under `/tmp` on the scanner. The exact scan command was not included in the transcript, so this is a **reconstructed command pattern** matching the saved result filename:
+
+```bash
+nuclei -u http://10.30.20.52:3000 \
+  -o /tmp/nuclei-juice-shop-results.txt
+```
+
+The terminal output I retained was one informational match:
 
 ```text
 [swagger-api] [http] [info] http://10.30.20.52:3000/api-docs/swagger.json [paths="/api-docs/swagger.json"]
 ```
 
-The result file could not be saved directly from the EC2 shell into the WSL checkout: `cd ~/projects/...` failed there and `mkdir scans/...` hit a permissions error. It was retrieved by printing the scanner's `/tmp/nuclei-juice-shop-results.txt` over an SSM interactive command, then saving it in WSL:
+I could not save the result directly from the EC2 shell into my WSL checkout: `cd ~/projects/...` failed there and `mkdir scans/...` hit a permissions error. I printed the scanner's `/tmp/nuclei-juice-shop-results.txt` through an SSM interactive command, then saved it in WSL. The SSM command shape was:
+
+```bash
+aws ssm start-session \
+  --target <CURRENT_SCANNER_INSTANCE_ID> \
+  --region us-east-1 \
+  --profile mds-devsecops-lab \
+  --document-name AWS-StartInteractiveCommand \
+  --parameters 'command=["sudo cat /tmp/nuclei-juice-shop-results.txt"]'
+```
+
+Back in WSL, I saved the line with:
 
 ```bash
 # WSL, not the SSM shell
@@ -284,7 +408,7 @@ The checked-in Nuclei result is a one-line transcription of the terminal output,
 
 ## 9. Review IAM, network, and controls
 
-The assessment is in [`security-assessment.md`](security-assessment.md), with the topology in [`architecture.md`](architecture.md). The review found:
+I recorded the assessment in [`security-assessment.md`](security-assessment.md) and the topology in [`architecture.md`](architecture.md). My review found:
 
 - Private app/scanner subnets, no public IPs, no inbound SSH, SSM used for operator access.
 - App ingress limited to TCP 3000 from the scanner security group; the scanner made the DAST request over that path.
@@ -297,9 +421,9 @@ The assessment is in [`security-assessment.md`](security-assessment.md), with th
 
 ## 10. Destroy the AWS lab and check for billable leftovers
 
-The user stopped resources overnight to avoid costs. Later the infrastructure was recreated for the remaining scans, then torn down. An initial `terraform destroy` removed 39 resources but failed to delete the S3 transfer bucket because it was not empty. A bucket-removal attempt failed when the short-lived AWS login session expired. After reauthenticating, the bucket contents were removed and `terraform destroy` completed with **39 resources destroyed**. A follow-up EC2 query showed no project instances. The conversation did not retain a complete inventory of all resource types after teardown.
+I stopped the resources overnight to avoid costs, recreated the infrastructure for the remaining scans, and destroyed it when the lab was complete. My first `terraform destroy` removed 39 resources but could not delete the S3 transfer bucket because it still contained objects. My first bucket cleanup attempt failed when the short-lived AWS session expired. After I logged in again, removed the bucket objects, and reran `terraform destroy`, Terraform reported **39 resources destroyed**. A follow-up EC2 query showed no project instances. I did not retain a full post-destroy inventory for every AWS resource type.
 
-In **WSL**, first confirm you're in the correct Terraform root and authenticated profile. Then inspect the destroy plan and enter `yes` only if it targets this lab:
+In **WSL**, I returned to the Terraform root, logged in again, and reran destroy. I checked the plan and confirmed it targeted this lab before answering `yes`:
 
 ```bash
 cd ~/projects/project-2b-isolated-juice-shop/terraform
@@ -307,7 +431,7 @@ aws login --profile mds-devsecops-lab
 terraform destroy
 ```
 
-If the lab bucket is non-empty, set its exact name and verify the account, region, and contents before removing objects. The bucket removal is destructive to objects in that bucket:
+When Terraform reported the bucket was non-empty, I set its exact name and checked the contents before deleting them. Removing these objects is destructive:
 
 ```bash
 BUCKET_NAME="replace-with-exact-lab-bucket-name"
@@ -315,10 +439,14 @@ aws s3 ls "s3://${BUCKET_NAME}" --region us-east-1 --profile mds-devsecops-lab
 aws s3 rm "s3://${BUCKET_NAME}" --recursive --region us-east-1 --profile mds-devsecops-lab
 ```
 
-After Terraform exits, check the project EC2 instances and separately review NAT Gateways, Elastic IPs, S3 buckets, EBS snapshots, and VPCs in the same account/region. Terraform's 39-resource message plus the no-instances query is the evidence retained here; it is not proof that every possible billable resource type was checked.
+After Terraform exited, I checked for project EC2 instances. I should separately review NAT Gateways, Elastic IPs, S3 buckets, EBS snapshots, and VPCs in the same account and region. The evidence I retained is Terraform's 39-resource message and the no-instances query; I cannot claim that I verified every possible billable resource type.
 
 ## 11. Results and remaining work
 
-**Completed:** reused/adapted Terraform modules, private EC2 deployment, Docker-hosted Juice Shop, SCA with Dependency-Check and saved HTML report, SonarQube SAST and curated issue workbook, Nuclei DAST result, IAM/network assessment, and Terraform teardown.
+**I completed:** reused/adapted Terraform modules, the private EC2 deployment, Docker-hosted Juice Shop, SCA with a saved Dependency-Check HTML report, SonarQube SAST and a curated issue workbook, a Nuclei DAST run, IAM/network assessment, and Terraform teardown.
 
-**Not completed or not retained:** complete SonarQube issue export, full Nuclei JSONL output, Trivy image scan, OWASP ZAP scan, successfully applied Project 2B Ansible hardening, final effective IAM/security-group snapshots, and complete post-destroy inventory. Before redeployment, reconcile the app cloud-init template with the successful Docker run and rotate credentials that appeared in chat.
+**I did not complete or retain:** a complete SonarQube issue export, full Nuclei JSONL output, Trivy image scan, OWASP ZAP scan, a successful Project 2B Ansible hardening run, final effective IAM/security-group snapshots, or a complete post-destroy inventory. Before I redeploy, I need to reconcile the checked-in app cloud-init template with the successful Docker run and rotate credentials that appeared in chat.
+
+### Command lines I could not recover exactly
+
+I included every distinct command family that appears in the chat and consolidated retries that repeated the same step. A few commands appeared only as wrapped or truncated terminal output, so I have not presented guesses as exact history: the full `docker cp` and archive creation line for staging the app image tree; the `docker run` line that launched the SonarQube server; the setup command for the temporary local port-8000 report transfer; and the exact Nuclei invocation (shown above as a reconstruction). I included the IAM password-reset script in sanitized form, with an interactive prompt and no password value. I left all API keys and tokens out of the walkthrough. The remaining commands are shown in the relevant sections, with the shell location identified.
