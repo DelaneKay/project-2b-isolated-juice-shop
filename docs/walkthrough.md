@@ -29,6 +29,7 @@ I continued in my existing WSL checkout instead of recreating the project direct
 In **WSL**, I checked the files and moved into the Terraform root:
 
 ```bash
+# WSL workstation
 cd ~/projects/project-2b-isolated-juice-shop
 find . -maxdepth 3 -type f | sort
 cd terraform
@@ -43,6 +44,7 @@ I used the home-lab CLI profile `mds-devsecops-lab` in `us-east-1`. The AWS CLI 
 In **WSL**, from `terraform/`:
 
 ```bash
+# WSL workstation — from the Terraform directory
 aws login --profile mds-devsecops-lab
 aws sts get-caller-identity --profile mds-devsecops-lab
 terraform init
@@ -54,6 +56,7 @@ terraform plan
 Before that login, I used an authorized `root-recovery` profile once to reset the IAM user's console password. The script prompted twice without displaying the password, wrote a short-lived mode-restricted JSON file, called IAM, and removed the file. I include the sanitized command here because it was a distinct setup step; it is account-specific and only works if that profile has permission to update the user's login profile:
 
 ```bash
+# WSL workstation — temporary root-recovery profile, before normal lab login
 (
   set -e
   umask 077
@@ -93,6 +96,7 @@ I first hit a Terraform module error: `modules/storage/main.tf` referred to `dat
 Review the plan before applying. It showed **40 resources to add** on a successful plan. Pay attention to NAT Gateway/EIP cost, EC2 instance types, IAM policies, S3 bucket, and network rules. The lab was later recreated, so output IDs differ across runs.
 
 ```bash
+# WSL workstation — from the Terraform directory
 terraform apply
 terraform output
 ```
@@ -106,6 +110,7 @@ I deployed a private app host and private scanner host. The app security group a
 From **WSL**, I checked that the hosts were managed and online, then opened an interactive shell using the current ID from Terraform output:
 
 ```bash
+# WSL workstation
 aws ssm describe-instance-information \
   --region us-east-1 \
   --profile mds-devsecops-lab \
@@ -116,6 +121,7 @@ aws ssm describe-instance-information \
 I opened a host session with:
 
 ```bash
+# WSL workstation — replace the placeholder with the current app or scanner instance ID
 aws ssm start-session --target <CURRENT_INSTANCE_ID> --region us-east-1 --profile mds-devsecops-lab
 ```
 
@@ -130,6 +136,7 @@ The Juice Shop forward used remote port 3000. I kept it running in one WSL termi
 My first cloud-init run failed in `scripts_user`; Docker was not installed, and `sudo docker` returned `command not found`. In the **Juice Shop EC2 SSM shell**, I checked the cloud-init and package state with:
 
 ```bash
+# Juice Shop EC2 — SSM shell
 sudo cloud-init status --long
 sudo tail -n 100 /var/log/cloud-init-output.log
 sudo apt-cache policy docker.io
@@ -138,6 +145,7 @@ sudo apt-cache policy docker.io
 The bootstrap log said `Package 'docker.io' has no installation candidate`. I changed the Ubuntu package source URLs from HTTP to HTTPS in the startup template and retried; Docker still needed a manual install. This was the source edit I used:
 
 ```bash
+# Juice Shop EC2 — bootstrap script runs as root during cloud-init
 for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
   if [ -f "$source_file" ]; then
     sed -i 's|http://|https://|g' "$source_file"
@@ -148,6 +156,7 @@ done
 Manual installation succeeded, and the host reported Docker `29.1.3-0ubuntu3~24.04.2`.
 
 ```bash
+# Juice Shop EC2 — SSM shell
 sudo apt-get update
 sudo apt-get install -y docker.io
 sudo systemctl enable --now docker
@@ -158,6 +167,7 @@ sudo docker --version
 The successful checks returned `active` and Docker version `29.1.3`. I also tried `sudo apt-get install -y awscli` on EC2, but Ubuntu had no installation candidate. I then installed AWS CLI v2 from its official archive on the host:
 
 ```bash
+# Juice Shop EC2 — SSM shell
 cd /tmp
 curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
 unzip -q awscliv2.zip
@@ -172,6 +182,7 @@ The target EC2 role still received S3 `403 AccessDenied`, so I performed the suc
 On the **app EC2 SSM shell**:
 
 ```bash
+# App EC2 — SSM shell
 sudo docker pull bkimminich/juice-shop:v17.1.1
 sudo docker ps -a
 ```
@@ -185,6 +196,7 @@ My first manual container attempt included `--read-only` and a tmpfs for `/juice
 The manual command that finally started Juice Shop removed `--read-only`, used an anonymous data volume, and retained the other runtime restrictions. In the **app EC2 SSM shell**, I ran:
 
 ```bash
+# App EC2 — SSM shell
 sudo docker rm -f juice-shop 2>/dev/null || true
 sudo docker run -d \
   --name juice-shop \
@@ -206,6 +218,7 @@ The container reached `Up` and published port 3000 on the host. Docker displayed
 From the **scanner EC2 SSM shell**, the app first returned `Connection refused` while Juice Shop was not running. After the container was fixed, the same private endpoint check returned HTTP 200:
 
 ```bash
+# Scanner EC2 — SSM shell
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 10 http://10.30.20.52:3000/
 ```
 
@@ -216,6 +229,7 @@ curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 10 http://10.30.20.52:
 I cloned the Juice Shop source in **WSL** into `scans/juice-shop` at tag `v17.1.1`. Git printed a detached-HEAD warning because that tag points to a commit rather than a branch; that is expected when I check out a fixed release tag.
 
 ```bash
+# WSL workstation
 cd ~/projects/project-2b-isolated-juice-shop
 mkdir -p scans
 cd scans
@@ -227,6 +241,7 @@ For the image-filesystem Dependency-Check scan, I copied the pinned image's appl
 Example transfer shape (use the current bucket name from the deployment; do not copy an old account-specific bucket name):
 
 ```bash
+# WSL workstation — set the current bucket name, then upload the archive
 # WSL: set this to the exact bucket name, then upload the archive
 BUCKET_NAME="replace-with-exact-lab-bucket-name"
 aws s3 cp /tmp/juice-shop-v17.1.1.tar.gz "s3://${BUCKET_NAME}/juice-shop-v17.1.1.tar.gz" --region us-east-1 --profile mds-devsecops-lab
@@ -244,6 +259,7 @@ The commands above show the clean WSL transfer pattern. They are not a claim tha
 I pulled the Dependency-Check image on the scanner. My report directory was initially empty because the scans exited before writing a report. The logs showed an invalid NVD API key (`NvdApiException`) and then `No documents exist`. I accidentally tried to use `read -s` from the SSM shell's `/bin/sh`; that option is Bash-specific. When I needed a hidden prompt, I switched to Bash first:
 
 ```bash
+# Scanner EC2 — SSM shell; enter Bash before using the hidden prompt
 bash
 read -rsp 'NVD API key: ' NVD_API_KEY
 printf '\n'
@@ -256,6 +272,7 @@ I never put the key in this walkthrough. A later run completed and wrote the HTM
 I used `owasp/dependency-check:latest` with the source mounted read-only and cache/report directories mounted persistently. The image pull and readable form of the completed one-shot scan were:
 
 ```bash
+# Scanner EC2 — SSM shell
 sudo docker pull owasp/dependency-check:latest
 sudo mkdir -p /opt/odc-data /opt/odc-image-reports
 sudo chown -R 1000:1000 /opt/odc-data /opt/odc-image-reports
@@ -273,6 +290,7 @@ sudo docker run --rm \
 I used the `latest` image tag; for a reproducible rerun, I should pin a version or digest. The successful output said `Analysis Complete` and `Writing HTML report to: /report/dependency-check-report.html`. The final report was about 35 MB and I saved it as `scans/juice-shop-v17.1.1-dependency-check-report.html`. In WSL I used `curl` against the temporary local HTTP endpoint/port forward; the download reached 100%. The exact command that opened the port-8000 forwarding/listener was not preserved in the chat. The local copy command I did record was:
 
 ```bash
+# WSL workstation — retrieve the report through the temporary local port-8000 forward
 curl -f http://localhost:8000/dependency-check-report.html \
   -o ~/projects/project-2b-isolated-juice-shop/scans/juice-shop-v17.1.1-dependency-check-report.html
 ```
@@ -290,6 +308,7 @@ I ran SonarQube Community Build `26.9.0.129388` in Docker on a temporary scanner
 On that host, I checked available memory, disk, and CPU count with:
 
 ```bash
+# SonarQube EC2 Spot host — SSM shell
 free -h
 df -h /
 nproc
@@ -298,6 +317,7 @@ nproc
 The host had about 3.7 GiB of memory and no swap. My earlier `t3.small` scan host was killed by the OOM killer. AWS rejected an on-demand `c7i-flex.large` modification with `FreeTierRestrictionError`, so I chose a separate Spot host. The target role could not run `ec2:DescribeInstanceTypes`; from my WSL CLI profile, I corrected the JMESPath number quoting and queried free-tier-eligible types with at least 4 GiB:
 
 ```bash
+# WSL workstation — AWS CLI profile
 aws ec2 describe-instance-types \
   --region us-east-1 \
   --filters "Name=free-tier-eligible,Values=true" \
@@ -308,12 +328,14 @@ aws ec2 describe-instance-types \
 The query listed `c7i-flex.large` (4096 MiB) and `m7i-flex.large` (8192 MiB). I pulled the SonarQube image:
 
 ```bash
+# SonarQube EC2 Spot host — SSM shell
 sudo docker pull sonarqube:26.9.0.129388-community
 ```
 
 Then I checked startup locally on the EC2 host:
 
 ```bash
+# SonarQube EC2 Spot host — SSM shell
 sudo docker ps -a --filter name=sonarqube
 sudo docker logs --tail 80 sonarqube
 curl -sS http://127.0.0.1:9000/api/system/status
@@ -322,6 +344,7 @@ curl -sS http://127.0.0.1:9000/api/system/status
 The service reported `STARTING` before changing to `UP`; `curl -I http://127.0.0.1:9000` returned HTTP 200 once ready. Docker showed the port bound to loopback (`127.0.0.1:9000->9000/tcp`), not the public internet. From **WSL**, I forwarded local port 19000 to remote port 9000. Some attempts failed with a Session Manager plugin handshake timeout, so I checked `session-manager-plugin --version` and retried. The working command form was:
 
 ```bash
+# WSL workstation — leave this port-forward session running
 aws ssm start-session \
   --target <CURRENT_SONAR_EC2_ID> \
   --document-name AWS-StartPortForwardingSession \
@@ -339,6 +362,7 @@ Sonar's onboarding page suggested a global install. I tried `npm install -g @son
 I did not preserve the exact successful full scanner invocation as a clean text transcript. The command below is my **safe repeat pattern**, not a verbatim copy of the secret-bearing attempt. On the SonarQube EC2 host, I used Bash for the hidden prompt, checked the source path, and ran the scanner with host networking so `127.0.0.1:9000` reached the SonarQube service:
 
 ```bash
+# SonarQube EC2 Spot host — SSM shell; run from Bash
 bash
 sudo test -f /opt/juice-shop-src/package.json && echo "Juice Shop source is ready"
 read -rsp 'SonarQube project token: ' SONAR_TOKEN
@@ -361,6 +385,7 @@ My first scan OOMed on the smaller host and another returned 401. After I used t
 I installed Nuclei v3.11.1 in the **scanner EC2 SSM shell**. My first release URL returned HTTP 404. I then downloaded the versioned Linux AMD64 archive and unpacked it; Nuclei printed `v3.11.1`, installed its templates, and reported no template updates at the time. This is the successful command pattern:
 
 ```bash
+# Scanner EC2 — SSM shell
 cd /tmp
 curl -fL https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip \
   -o nuclei_3.11.1_linux_amd64.zip
@@ -373,6 +398,7 @@ nuclei -update-templates
 Before installing Nuclei, I got `nuclei: command not found`. My first `curl -v --max-time 10 http://10.30.20.52:3000/` from the scanner returned `Connection refused` because Juice Shop was not listening. After I started the app container, the endpoint returned HTTP 200. I ran the DAST scan against the private app address and saved its text output under `/tmp` on the scanner. The exact scan command was not included in the transcript, so this is a **reconstructed command pattern** matching the saved result filename:
 
 ```bash
+# Scanner EC2 — SSM shell; reconstructed Nuclei scan command
 nuclei -u http://10.30.20.52:3000 \
   -o /tmp/nuclei-juice-shop-results.txt
 ```
@@ -386,6 +412,7 @@ The terminal output I retained was one informational match:
 I could not save the result directly from the EC2 shell into my WSL checkout: `cd ~/projects/...` failed there and `mkdir scans/...` hit a permissions error. I printed the scanner's `/tmp/nuclei-juice-shop-results.txt` through an SSM interactive command, then saved it in WSL. The SSM command shape was:
 
 ```bash
+# WSL workstation — run the SSM command to print the scanner saved result
 aws ssm start-session \
   --target <CURRENT_SCANNER_INSTANCE_ID> \
   --region us-east-1 \
@@ -397,6 +424,7 @@ aws ssm start-session \
 Back in WSL, I saved the line with:
 
 ```bash
+# WSL workstation — not the SSM shell
 # WSL, not the SSM shell
 cd ~/projects/project-2b-isolated-juice-shop
 mkdir -p scans/nuclei
@@ -426,6 +454,7 @@ I stopped the resources overnight to avoid costs, recreated the infrastructure f
 In **WSL**, I returned to the Terraform root, logged in again, and reran destroy. I checked the plan and confirmed it targeted this lab before answering `yes`:
 
 ```bash
+# WSL workstation — from the Terraform directory
 cd ~/projects/project-2b-isolated-juice-shop/terraform
 aws login --profile mds-devsecops-lab
 terraform destroy
@@ -434,6 +463,7 @@ terraform destroy
 When Terraform reported the bucket was non-empty, I set its exact name and checked the contents before deleting them. Removing these objects is destructive:
 
 ```bash
+# WSL workstation — use the exact lab bucket name
 BUCKET_NAME="replace-with-exact-lab-bucket-name"
 aws s3 ls "s3://${BUCKET_NAME}" --region us-east-1 --profile mds-devsecops-lab
 aws s3 rm "s3://${BUCKET_NAME}" --recursive --region us-east-1 --profile mds-devsecops-lab
