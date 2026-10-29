@@ -17,6 +17,13 @@ Juice Shop is intentionally vulnerable. Treat this as a lab baseline, validate i
 - The project overview showed a passed quality gate, with 127 Security (E), 132 Reliability (D), and 605 Maintainability (A) issues in Overall Code.
 - The workbook is a curated summary, not a full SonarQube issue export. Analysis warnings and representative issue excerpts are documented in [`../docs/security-assessment.md`](../docs/security-assessment.md).
 
+## Last deployed scan hosts
+
+- Scanner EC2: `i-03e2af14e0abfd20d` (`10.30.10.223`).
+- Juice Shop app EC2: `i-0553f724dcdade47e` (`10.30.20.52`).
+- SonarQube Spot EC2: `i-0cde1554bd56e9859` (`10.30.10.52`).
+- These are the final run's historical IDs before teardown.
+
 ## Nuclei — DAST
 
 - Target: private Juice Shop at `http://10.30.20.52:3000`.

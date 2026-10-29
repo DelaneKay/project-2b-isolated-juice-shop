@@ -12,6 +12,16 @@ I wrote down what actually happened, including failed attempts, rather than pres
 - **Not used:** AWS WAF (no public HTTP entry point), Trivy, OWASP ZAP, and a completed Project 2B Ansible hardening run.
 - **Cleanup:** Terraform reported 39 resources destroyed; a follow-up EC2 query showed no project instances. A complete post-destroy inventory of every AWS resource type was not retained.
 
+### Last deployment host IDs
+
+These are the **last IDs from the final Project 2B deployment before teardown**. I use these same IDs throughout the project materials. They are historical references; AWS will assign new IDs if I deploy the lab again.
+
+| Node | Instance ID | Private IP |
+| --- | --- | --- |
+| Juice Shop app EC2 | `i-0553f724dcdade47e` | `10.30.20.52` |
+| Scanner EC2 | `i-03e2af14e0abfd20d` | `10.30.10.223` |
+| SonarQube Spot EC2 | `i-0cde1554bd56e9859` | `10.30.10.52` |
+
 I reused and adapted the VPC, IAM, and storage modules from Project 1B and included their source under `modules/`. I connected them to a separate Project 2B Terraform root for the Juice Shop and scanner hosts and their security groups. Someone cloning this repository can see the module files; the lab does not depend on a sibling Project 1B checkout.
 
 ### How I checked command coverage
@@ -101,7 +111,7 @@ terraform apply
 terraform output
 ```
 
-A successful apply returned the Juice Shop instance ID and private IP, scanner instance ID, VPC ID, and an SSM port-forward command. I used `terraform output` and the current EC2/SSM status rather than carrying old IDs into the recreated deployment.
+A successful apply returned the Juice Shop and scanner instance IDs, the app private IP, the VPC ID, and an SSM port-forward command. The IDs shown above are the final run before teardown; a future apply will create new IDs, which I should read from `terraform output`.
 
 ## 3. Verify the private network and open SSM sessions
 
@@ -121,8 +131,11 @@ aws ssm describe-instance-information \
 I opened a host session with:
 
 ```bash
-# WSL workstation — replace the placeholder with the current app or scanner instance ID
-aws ssm start-session --target <CURRENT_INSTANCE_ID> --region us-east-1 --profile mds-devsecops-lab
+# WSL workstation — connect to the last Juice Shop app EC2 instance
+aws ssm start-session --target i-0553f724dcdade47e --region us-east-1 --profile mds-devsecops-lab
+
+# WSL workstation — connect to the last scanner EC2 instance
+aws ssm start-session --target i-03e2af14e0abfd20d --region us-east-1 --profile mds-devsecops-lab
 ```
 
 I used separate WSL terminals when I needed sessions to both hosts. Commands prefixed with `sudo` in the next sections ran in the relevant **EC2 SSM shell**, not WSL. SSM sessions expired after inactivity, so I reconnected with the command above. Port forwarding also returned Session Manager plugin handshake timeouts even though the plugin was installed. I checked `session-manager-plugin --version`, confirmed the instance was Online, and retried; a handshake failure did not mean the application itself was down.
@@ -346,7 +359,7 @@ The service reported `STARTING` before changing to `UP`; `curl -I http://127.0.0
 ```bash
 # WSL workstation — leave this port-forward session running
 aws ssm start-session \
-  --target <CURRENT_SONAR_EC2_ID> \
+  --target i-0cde1554bd56e9859 \
   --document-name AWS-StartPortForwardingSession \
   --parameters '{"portNumber":["9000"],"localPortNumber":["19000"]}' \
   --region us-east-1 \
@@ -414,7 +427,7 @@ I could not save the result directly from the EC2 shell into my WSL checkout: `c
 ```bash
 # WSL workstation — run the SSM command to print the scanner saved result
 aws ssm start-session \
-  --target <CURRENT_SCANNER_INSTANCE_ID> \
+  --target i-03e2af14e0abfd20d \
   --region us-east-1 \
   --profile mds-devsecops-lab \
   --document-name AWS-StartInteractiveCommand \

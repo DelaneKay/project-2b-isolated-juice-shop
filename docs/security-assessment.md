@@ -5,6 +5,8 @@
 **Region:** `us-east-1`  
 **Status:** Lab deployment destroyed after testing; scan artifacts retained locally.
 
+**Last deployment host IDs:** Juice Shop app `i-0553f724dcdade47e` (`10.30.20.52`); scanner `i-03e2af14e0abfd20d` (`10.30.10.223`); SonarQube Spot host `i-0cde1554bd56e9859` (`10.30.10.52`). These are the final IDs before teardown and will change on redeployment.
+
 ## Executive summary
 
 The lab deployed the intentionally vulnerable Juice Shop application on a private EC2 instance and used a separate private scanner instance. Operators connected with AWS Systems Manager (SSM); the scanner reached the application on TCP 3000. The application was not intentionally exposed to the public internet, and the project did not use AWS WAF because there was no public HTTP entry point to protect.

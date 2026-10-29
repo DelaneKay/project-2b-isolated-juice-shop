@@ -1,7 +1,8 @@
 # Nuclei DAST result
 
 - Target: `http://10.30.20.52:3000` (private Juice Shop lab host)
-- Scanner: Nuclei v3.11.1, run from the private scanner EC2 instance
+- Scanner: Nuclei v3.11.1, run from scanner EC2 `i-03e2af14e0abfd20d` (`10.30.10.223`).
+- App: Juice Shop EC2 `i-0553f724dcdade47e` (`10.30.20.52`).
 - Result captured: 2026-10-27
 - Outcome: one informational Swagger API documentation endpoint found at `/api-docs/swagger.json`.
 

@@ -2,6 +2,8 @@
 
 Deploy OWASP Juice Shop on private EC2 with Docker, then assess its IAM, network exposure, host controls, container, dependencies, code, and runtime behavior. This is an intentionally vulnerable training application. The lab has no public application endpoint and no WAF.
 
+Last deployment before teardown: app EC2 `i-0553f724dcdade47e`, scanner EC2 `i-03e2af14e0abfd20d`, and SonarQube Spot EC2 `i-0cde1554bd56e9859`. These are historical IDs; a new deployment will receive different IDs.
+
 ## Architecture
 
 ```mermaid
